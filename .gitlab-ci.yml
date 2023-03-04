@@ -1,0 +1,58 @@
+variables:
+  OCP_BC_NAME: $CI_PROJECT_TITLE
+  LOCAL_REGISTRY: image-registry.openshift-image-registry.svc:5000
+  REMOTE_REGISTRY: harbor.gu.local
+  REMOTE_REGISTRY_PROJECT: $CI_PROJECT_ROOT_NAMESPACE
+  NAME_BRANCH: $CI_COMMIT_REF_SLUG
+  CONTEXTDIR: ""
+
+stages:
+  - build
+
+build:
+  image: harbor.gu.local/library/openshift4/ose-cli:v4.6
+  stage: build
+  variables:
+    TZ: "UTC-3"
+  before_script:
+    - oc  delete  build --selector=buildconfig=${OCP_BC_NAME}
+  script:
+    - oc  create imagestream $OCP_BC_NAME  --lookup-local=true --dry-run=client -oyaml | oc apply -f-
+    - |
+      cat <<EOF | oc  apply -f-
+      apiVersion: build.openshift.io/v1
+      kind: BuildConfig
+      metadata:
+        labels:
+          build: ${OCP_BC_NAME}
+        name: ${OCP_BC_NAME}
+      spec:
+        failedBuildsHistoryLimit: 1
+        nodeSelector: null
+        output:
+          to:
+            kind: ImageStreamTag
+            name: ${OCP_BC_NAME}:${NAME_BRANCH}
+        postCommit: {}
+        resources:
+          limits:
+            cpu: 1
+            memory: 3Gi
+          requests:
+            cpu: 500m
+            memory: 2Gi
+        runPolicy: Serial
+        source:
+          binary: {}
+          type: Binary
+        strategy:
+          dockerStrategy: {}
+          type: Docker
+        successfulBuildsHistoryLimit: 1
+      EOF
+    - oc  start-build $OCP_BC_NAME  --from-dir ./$CONTEXTDIR --follow
+    - BUILD_NUMBER=$(oc get bc $OCP_BC_NAME -ojsonpath="{.status.lastVersion}")
+    - sleep  30s;
+    - if [[ $(oc get build $OCP_BC_NAME-$BUILD_NUMBER -ojsonpath="{.status.phase}") != "Complete" ]]; then echo "Status $(oc get build $OCP_BC_NAME-$BUILD_NUMBER -ojsonpath="{.status.phase}")" && exit 1; fi
+  tags:
+    - relcicd-testing
